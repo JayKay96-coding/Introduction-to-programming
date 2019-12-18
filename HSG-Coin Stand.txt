@@ -1,0 +1,238 @@
+import datetime as dt
+import hashlib
+import pandas as pd
+import uuid
+import random
+
+
+class HSGChain:
+    def __init__(self, name):
+        # mining configuration
+        self.__diff = 5 #Here the difficulty for the mining can be set.
+        # A higher difficulty requires more iterations to find the hash
+        self.__maxNonce = 2 ** 32
+
+        self.__name = name.upper()  # Convert name to upper case and store it here
+        self.__chain = []  # Create an empty list
+        self.__id = hashlib.sha256(str(str(uuid.uuid4()) + self.__name + str(
+            dt.datetime.now())).encode('utf-8')).hexdigest()
+        self.__sequence_id = 0  # Create a sequence ID and set it to zero
+        self.__prev_hash = None  # Set to None. First block has no previous Block and therefore no prev_hash
+        self.__current_block = Block(self.__sequence_id, self.__prev_hash)  # Create a new Block
+        print(self.__name, 'HSGChain created with ID', self.__id, 'chain started.')
+
+    # mining function
+    def sha256(self, message):  # help function to hash a message passed as parameters
+        return hashlib.sha256(message.encode('utf-8')).hexdigest() # transforms into hexadecimal system to use less digits
+
+    def mine(self, message, difficulty=1):
+        assert difficulty >= 1  # check that the difficulty is >= 1
+        prefix = '1' * difficulty  # generate the prefix '1'*2 = '11'
+        for i in range(self.__maxNonce):
+            digest = self.sha256(str(message) + str(i))  # loop that generates different hashes
+            if digest.startswith(prefix):  # test if the hash starts with prefix
+                print("after " + str(i) + " iterations found nonce: " + digest)
+                return digest
+
+    # This method should loop through all committed and uncommitted blocks and display
+    # all transactions in them
+    def display_chain(self):
+        for block in self.__chain:  # iterating list of committed blocks block by block
+            # display transaction of each committed block using display_transactions() from block Class
+            block.display_transactions()
+        self.__current_block.display_transactions()  # display data of current block (Uncommitted block)
+
+    # This method accepts a new transaction and adds it to current block if block is not full (uncommitted).
+    # If block is full, it will delegate the committing and creation of a new current block
+    def add_transaction(self, s, r, v):
+        if self.__current_block.get_size() >= 10:  # check if the block contains 10 transaction.
+            #This can be changed, so that a block can store more/less transactions
+            self.__commit_block(self.__current_block)  # if so commit the block
+        self.__current_block.add_transaction(s, r, v)  # if not add transaction to the current block
+
+    ''' This method is called by add_transaction if a block is full (i.e 10 or more transactions).
+    It is private and therefore not publicly accessible. It will change the block status to committed,
+    obtain the merkle root hash, generate and set the block's hash, set the prev_hash to the previous
+    block's hash, append this block to the chain list, increment the seq_id and create a new block
+    as the current block '''
+
+    def __commit_block(self, block):
+        block.set_status('COMMITTED')
+        block.set_simple_merkle_root()  # create the merkle hash
+        # create the block hash using: prev_hash, timestamp,seq_id and merkle hash. All this information gets transformed into
+        #the string data type and then encoded to a single string of characters (the hash). Here again the hexadecimal system is used
+        block_hash = hashlib.sha256(str(str(block.get_nonce()) +
+                                        str(block.get_prev_hash()) +
+                                        str(self.__id) + str(dt.datetime.now()) +
+                                        str(block.get_seq_id()) +
+                                        str(block.get_simple_merkle_root())
+                                        ).encode('utf-8')).hexdigest()
+        block_hash = self.mine(block_hash, self.__diff)
+        block.set_block_hash(block_hash)  # use the setter to set block's hash
+        self.__chain.append(block)  # Add block to the list of committed blocks
+        # Creating new block
+        self.__sequence_id += 1  # Increment the sequence id
+        # create a new block and provide it with sequence id and prev block hash
+        self.__current_block = Block(self.__sequence_id, block.get_block_hash())
+        print('Block committed')
+
+    # Display the metadata of all blocks (committed or uncommitted).
+    def display_block_headers(self):
+        for block in self.__chain:  # iterating list of committed blocks block by block
+            block.display_header()  # display block information
+        self.__current_block.display_header()  # display current block information
+
+    # return total number of blocks in this chain (committed and uncommitted blocks combined)
+    def get_number_of_blocks(self):
+        return len(self.__chain) + 1  # len returns the length of __chain list + the current block (Number of committed and uncommitted blocks in the Chain)
+
+    # Returns all of the values (HSG coins transferred) of all transactions from every block
+    # as a single list
+    def get_values(self):
+        values = []  # empty list
+        for block in self.__chain:  # iterating list of committed blocks block by block
+            # extend adds every element from block.get_values() to the value list. Better suited than append
+            values.extend(block.get_values())
+        values.extend(self.__current_block.get_values())
+        return values
+
+
+class Block:
+    def __init__(self, seq_id, prev_hash):
+        self.__seq_id = seq_id  # Set to what's passed in from constructor
+        self.__prev_hash = prev_hash  # From constructor
+        self.__col_names = ['Timestamp', 'Sender', 'Recipient', 'Value', 'TxHash']
+        # Create a new blank DataFrame with set headers
+        self.__transactions = pd.DataFrame(columns=self.__col_names)
+        self.__status = 'UNCOMMITTED'  # Initial status. This will be a string.
+        self.__block_hash = None
+        self.__merkle_tx_hash = None
+        self.__nonce = 0
+
+    # Display the metadata of this block. Id,status,block hash, previous block's hash, merkle hash
+    # and number of transactions in the block
+    def display_header(self):
+        print('\t  ##############')
+        print(' sequence Id :', str(self.get_seq_id()),
+              ' \n status :', self.get_status(),
+              ' \n block hash :', self.get_block_hash(),
+              ' \n previous block\'s hash :', self.get_prev_hash(),
+              ' \n merkle hash :', self.get_simple_merkle_root(),
+              ' \n block size : ', self.get_size())
+    # with \n we begin a new line for nicer design
+
+    # This is the interface for how transactions are added
+    def add_transaction(self, s, r, v):
+        # Get current timestamp
+        ts = dt.datetime.now()
+        # Hash of timestamp, sender, recipient, value
+        tx_hash = hashlib.sha256(str(str(ts) + s + r + str(v)).encode('utf-8')).hexdigest()
+        # Create DataFrame with transaction data (a DataFrame with only 1 row)
+        new_transaction = pd.DataFrame([[ts, s, r, v, tx_hash]], columns=self.__col_names)
+        # Append to the transactions data
+        appended_data = [self.__transactions, new_transaction]  # list of two dataframes
+        # update the list of transactions with a concat of the old list and the new transaction
+        self.__transactions = pd.concat(appended_data)
+        # increment the index of the transaction dataframe
+        self.__transactions.index = range(1, len(self.__transactions) + 1)
+
+    # Print all transactions contained in this block
+    def display_transactions(self):
+        with pd.option_context('display.max_rows', None, 'display.max_columns', None):
+            print(self.__transactions)
+
+    # Return the number of transactions contained in this block
+    def get_size(self):
+        return self.__transactions.shape[0]
+
+    # change of status (only two statuses exist COMMITTED or UNCOMMITTED).
+    def set_status(self, status):
+        self.__status = status
+
+    # Setter for block hash
+    def set_block_hash(self, hash):
+        self.__block_hash = hash
+
+    ''' Return and calculate merkle hash by taking all transaction hashes, concatenate them into one
+    string and hash that string producing a "merkle root".
+    Note, this is not how merkle tries work, its just a simple simulation of the process.
+     '''
+
+    def set_simple_merkle_root(self):
+        hash_str = ''  # empty string
+        for index, row in self.__transactions.iterrows():  # iterating the dataframe row by row
+            hash_str += row['TxHash']  # append the transaction hash of each row to hash_str
+        # create the merkle root using the hashlib function
+        merkle = hashlib.sha256(str(hash_str).encode('utf-8')).hexdigest()
+        self.__merkle_tx_hash = merkle
+
+    def set_nonce(self, val):
+        self.__nonce = val
+
+    # Getters
+    def get_simple_merkle_root(self):
+        return self.__merkle_tx_hash
+
+    def get_values(self):
+        values = []  # empty list
+        for index, row in self.__transactions.iterrows():  # iterating the dataframe row by row
+            values.append(row['Value'])  # append to values list, the transaction value for each row
+        return values
+
+    def get_status(self):
+        return self.__status
+
+    def get_seq_id(self):
+        return self.__seq_id
+
+    def get_prev_hash(self):
+        return self.__prev_hash
+
+    def get_block_hash(self):
+        return self.__block_hash
+
+    def get_nonce(self):
+        return self.__nonce
+
+
+clients = ['Thomas', 'Joël', 'Marc', 'Manfred', 'Armin', 'Rafffael']
+
+
+def random_transactions(chain, number_of_transaction):
+    #Having a random generation function is handy to test certain aspects of the block chain more quickly, so that
+    #the user does not have to enter a lot of information every time he wants to test the chain for bigger amounts of data
+    for i in range(number_of_transaction):
+        #  randomly choose two clients
+        sender, recipient = random.sample(set(clients), 2)
+        #  randomly generate the value of the transaction.
+        value = random.uniform(5, 100)
+        chain.add_transaction(sender, recipient, value)
+
+
+def add_transaction(chain):
+    while True:  # loop to add manually transaction
+        answer = input(' Do you want to add a transaction (y/n):  ')
+        if answer == 'y':  # if y is typed we will proceed by inputing transaction info
+            sender = input('Enter sender name : ')
+            recipient = input("Enter recipient's name : ")
+            value = input('Enter value of the transaction : ')
+            chain.add_transaction(sender, recipient, value)
+        else:
+            #if n (or anything other than y) is typed the process will finish
+            break
+
+
+if __name__ == '__main__':
+    HSG_chain = HSGChain('testchain')
+    # add transactions randomly
+    random_transactions(HSG_chain, 25) #can be set to comment if the user only want user input for transactions
+    #The number of random transaction can also be changed here for a different sample size of transactions.
+    #The random generation is primarily in the code for testing purposes
+    # add transaction manually (with user input)
+    add_transaction(HSG_chain)
+    # display transaction information
+    HSG_chain.display_chain()
+    # displays blocks' metadata
+    HSG_chain.display_block_headers()
+
+    print('\n all Transferred HSG coins : \n', HSG_chain.get_values())
